@@ -142,8 +142,9 @@ copying an investor does not copy their results. You can lose money. Decide for
 yourself, and talk to a licensed professional if you need advice.
 
 **No trade goes through until you say yes.** Only `/trader-broker` can lead to
-an order, and only after `/trader-risk` passes that exact order and you type yes
-for it in the chat. Set your brokerage tool to "Needs approval" in Claude
+an order, and only after `/trader-risk` passes that exact order (in the last
+15 minutes) and you type yes for it in the chat. Set your brokerage tool to
+"Needs approval" in Claude
 (Customize, Connectors, tool permissions), never "Always allow", so Claude's
 own "Allow once / Deny" card is a second check. No options, margin, short
 selling or leverage unless you turn them on.
@@ -167,6 +168,28 @@ anything that matters against your broker before you act on it.
 
 **Taxes.** `/trader-tax` does the arithmetic on lots and wash-sale windows. It
 is not tax advice.
+
+## Changes in this fork
+
+The upstream repo has one commit and no maintainer activity. This fork folds
+in the community fixes that were sitting unmerged there and in the sibling
+day-trader-skill repo, where the two packs share a tool:
+
+- `/trader-broker`: a yes that names any other stock ("yes, buy TSLA") is not
+  a yes for this ticket, batch or not (upstream PR 8).
+- `/trader-broker`: a trader-risk PASS goes stale after 15 minutes
+  (`"risk_pass_max_minutes"` in `trader/config.json`); cash, holdings and
+  prices move after a check, so an old PASS shows NOT READY and asks for
+  `/trader-risk` again (ported from day-trader-skill PRs 21 and 59).
+- `/trader-pelosi`: with xpdf's `pdftotext` (the one Git for Windows ships)
+  the top of a wrapped amount range and the tail of a split description were
+  dropped; now they are kept (upstream issue 9).
+- `/trader-analyst`: a quarter whose diluted EPS is derived from the annual
+  figure is marked `derived` like revenue and net income already were
+  (day-trader-skill PR 24).
+- Every tool writes UTF-8 to the console, so a headline with a character
+  outside the Windows code page no longer crashes a run (day-trader-skill
+  PR 49).
 
 ## Files
 

@@ -270,6 +270,14 @@ def report(res):
 
 
 def main(argv=None):
+    # Output as UTF-8 even where the console code page is not (Windows): one
+    # character outside it would otherwise crash the whole run, and in-page
+    # characters would go out as lone bytes. The guard keeps StringIO (the
+    # test suite's redirect_stdout) working, since it has no reconfigure.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser(description="Bring the portfolio back to its target weights (trader-rebalance).")
     ap.add_argument("--portfolio", default="trader/portfolio.json")
     ap.add_argument("--prices", default="trader/prices.json")

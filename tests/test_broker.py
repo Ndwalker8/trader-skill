@@ -1,3 +1,4 @@
+import datetime
 import io
 import json
 import os
@@ -40,6 +41,14 @@ class ExplicitYes(unittest.TestCase):
                   "yes AXP", "yes 1000", "yes but make it 1000", "yes?", "no", "not yes",
                   "yes, wait", "yes if it is under 340"):
             self.assertFalse(self.yes(r), r)
+
+    def test_yes_naming_a_stock_outside_the_batch_does_not(self):
+        for r in ("yes, buy TSLA", "yes TSLA", "YES BUY TSLA", "yes buy tsla", "yes $1,250 of NVDA",
+                  "yes BRK.B"):
+            self.assertFalse(self.yes(r), r)
+        for r in ("yes buy it", "YES BUY AAPL", "yes buy aapl", "yes, buy 1250 dollars of AAPL",
+                  "YES PLEASE", "yes buy the shares"):
+            self.assertTrue(self.yes(r), r)
 
     def test_amount_must_match_this_order(self):
         sell = {"symbol": "KO", "side": "sell", "qty": "3", "type": "market", "time_in_force": "day"}
@@ -164,6 +173,55 @@ class Flow(unittest.TestCase):
         self.run_risk(today="2026-10-12")
         code, text, _ = run(self.args("show", "--index", "1"))
         self.assertIn("not today", text)
+
+    def checked_plus(self, minutes):
+        """A local ISO --now this many minutes after the last risk check."""
+        with open(self.risk) as fh:
+            checked = datetime.datetime.fromisoformat(json.load(fh)["checked_at"])
+        return (checked + datetime.timedelta(minutes=minutes)).isoformat()
+
+    def test_a_pass_goes_stale(self):
+        self.assertEqual(self.run_risk(), 0)
+        code, text, _ = run(self.args("show", "--index", "1", "--now", self.checked_plus(14)))
+        self.assertEqual(code, 0)
+        self.assertIn("READY: trader-risk PASS", text)
+        code, text, _ = run(self.args("show", "--index", "1", "--now", self.checked_plus(16)))
+        self.assertEqual(code, 1)
+        self.assertIn("NOT READY: the risk check is 16 minutes old (the limit is 15)", text)
+        self.assertNotIn("Reply \"yes\"", text)
+        code, _, err = run(self.args("approve", "--index", "1", "--reply", "yes", "--now", self.checked_plus(16)))
+        self.assertEqual(code, 1)
+        self.assertIn("not ready", err)
+        self.assertFalse(os.path.exists(self.state))
+        # a new check makes it READY again
+        self.assertEqual(self.run_risk(), 0)
+        self.assertEqual(run(self.args("approve", "--index", "1", "--reply", "yes"))[0], 0)
+
+    def test_a_check_with_an_unusable_time_does_not_count(self):
+        self.assertEqual(self.run_risk(), 0)
+        code, text, _ = run(self.args("show", "--index", "1", "--now", self.checked_plus(-5)))
+        self.assertEqual(code, 1)
+        self.assertIn("later than now", text)
+        with open(self.risk) as fh:
+            doc = json.load(fh)
+        del doc["checked_at"]
+        with open(self.risk, "w") as fh:
+            json.dump(doc, fh)
+        code, text, _ = run(self.args("show", "--index", "1"))
+        self.assertEqual(code, 1)
+        self.assertIn("has no time on it", text)
+
+    def test_the_stale_limit_comes_from_the_config(self):
+        with open(self.cfg) as fh:
+            c = json.load(fh)
+        c["risk_pass_max_minutes"] = 5
+        with open(self.cfg, "w") as fh:
+            json.dump(c, fh)
+        self.assertEqual(self.run_risk(), 0)
+        self.assertEqual(run(self.args("show", "--now", self.checked_plus(4)))[0], 0)
+        code, text, _ = run(self.args("show", "--now", self.checked_plus(6)))
+        self.assertEqual(code, 1)
+        self.assertIn("the limit is 5", text)
 
     def test_blocked_orders_are_never_ready(self):
         with open(self.cfg) as fh:

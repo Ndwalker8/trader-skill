@@ -132,7 +132,37 @@ class ParseReport(unittest.TestCase):
         llc = rep["rows"][-1]
         self.assertIsNone(llc["ticker"])
         self.assertEqual(llc["asset_type"], "AB")
+        self.assertEqual(llc["amount"], "$500,001 - $1,000,000")
         self.assertIn("luxury hotel", llc["description"])
+
+    def test_xpdf_layout_keeps_the_wrapped_amount(self):
+        # xpdf's pdftotext (the one Git for Windows ships) puts a blank line
+        # between "$500,001 -" and "$1,000,000" when the asset fits on one
+        # line, and can split a description with one too. The fixture is the
+        # poppler text of PTR 20035143 with those blank lines put in.
+        rep = ptr.parse_ptr_text(text("ptr-20035143-xpdf.txt"))
+        self.assertEqual(rep["doc_id"], "20035143")
+        self.assertEqual(len(rep["rows"]), 7)
+        llc = rep["rows"][-1]
+        self.assertEqual(llc["asset_type"], "AB")
+        self.assertEqual(llc["amount"], "$500,001 - $1,000,000")
+        self.assertEqual((llc["amount_low"], llc["amount_high"]), (500001, 1000000))
+
+    def test_xpdf_layout_keeps_a_description_split_by_a_blank_line(self):
+        # "... luxury hotel property in San" / blank / "Francisco, CA."
+        llc = ptr.parse_ptr_text(text("ptr-20035143-xpdf.txt"))["rows"][-1]
+        self.assertTrue(llc["description"].endswith("in San Francisco, CA."), llc["description"])
+        poppler = ptr.parse_ptr_text(text("ptr-20035143.txt"))["rows"][-1]
+        self.assertEqual(llc["description"], poppler["description"])
+
+    def test_xpdf_and_poppler_layouts_read_the_same(self):
+        def key(r):
+            return (r["ticker"], r["asset_type"], r["date"], r["amount"],
+                    r.get("shares"), r.get("option"), r["description"])
+        poppler = ptr.parse_ptr_text(text("ptr-20035143.txt"))
+        xpdf = ptr.parse_ptr_text(text("ptr-20035143-xpdf.txt"))
+        self.assertEqual([key(r) for r in xpdf["rows"]], [key(r) for r in poppler["rows"]])
+        self.assertTrue(all(r["amount_high"] for r in xpdf["rows"]))
 
     def test_render_says_public_and_flags_your_stocks(self):
         rep = ptr.parse_ptr_text(text("ptr-20035143.txt"))

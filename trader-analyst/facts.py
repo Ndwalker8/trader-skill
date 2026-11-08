@@ -256,7 +256,7 @@ def analyse(companyfacts, quarters=6, name=None):
         rows.append({
             "end": end, "start": base.get("start"),
             "fiscal": "%s %s" % (base.get("fp") or "", base.get("fy") or ""),
-            "derived": any(s[k].get(end, {}).get("derived") for k in ("revenue", "net_income")),
+            "derived": any(s[k].get(end, {}).get("derived") for k in ("revenue", "net_income", "eps_diluted")),
             "revenue": r, "gross_profit": gp, "operating_income": oi, "net_income": ni,
             "eps_diluted": round(eps, 2) if eps is not None else None,
             "gross_margin": margin(gp, r), "operating_margin": margin(oi, r),
@@ -468,6 +468,14 @@ def ticker_ciks(fetcher):
 
 
 def main(argv=None):
+    # Output as UTF-8 even where the console code page is not (Windows): one
+    # character outside it would otherwise crash the whole run, and in-page
+    # characters would go out as lone bytes. The guard keeps StringIO (the
+    # test suite's redirect_stdout) working, since it has no reconfigure.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("tickers", nargs="*", help="tickers, e.g. AAPL KO")
     ap.add_argument("--cik", help="use this CIK instead of a ticker lookup (one company)")

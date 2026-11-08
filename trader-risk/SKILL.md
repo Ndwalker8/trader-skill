@@ -37,7 +37,7 @@ python3 "${CLAUDE_SKILL_DIR}/check.py" --no-write  # look without recording
 | `trader/portfolio.json` | cash and holdings; if missing, a fresh account funded with the budget |
 | `trader/prices.json` | needed to size share-count orders and value holdings |
 | `trader/state/broker.json` | what was placed today, for duplicates and the daily limit |
-| `trader/state/risk.json` | the verdicts it writes, with a fingerprint of each exact order |
+| `trader/state/risk.json` | the verdicts it writes, with a fingerprint of each exact order and the time of the check (`checked_at`) |
 
 ## The checks
 
@@ -70,7 +70,9 @@ sent as a number instead of a string, an advanced (bracket) order.
    user may decide to change). Never change a limit yourself.
 4. If the orders change in any way, run the check again. trader-broker matches
    each order to its verdict by fingerprint, so an edited order is not ready
-   until it passes again, and a verdict from yesterday does not count today.
+   until it passes again. A verdict also goes stale after 15 minutes
+   (`"risk_pass_max_minutes"` in `trader/config.json`): run the check right
+   before the broker step, not an hour earlier.
 
 ## Example: the reel
 
@@ -102,7 +104,7 @@ the order is allowed to be shown to the user.
 - Education and tooling, not financial advice. A PASS is a rules check, not a recommendation.
 - Paper trading by default (`"paper": true`). Going live is the user's own decision, in their own config.
 - Nothing in this pack places an order except trader-broker, and only when all three hold: trader-risk
-  passed that exact order today, the user typed an explicit yes for that one order in the chat, and the
+  passed that exact order in the last 15 minutes, the user typed an explicit yes for that one order in the chat, and the
   user clicked Allow once on Claude's own card because the order tool is set to "Needs approval"
   (Customize > Connectors > tool permissions). Never set an order tool to "Always allow".
 - No options, margin, short selling or leverage unless the config allows it and the user confirms.

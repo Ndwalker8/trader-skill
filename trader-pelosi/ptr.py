@@ -298,8 +298,16 @@ def parse_ptr_text(text, filed=None):
         if cur is None:
             continue
         if not s:
-            if mode in ("description", "asset"):
-                mode = "labels" if mode == "description" or "[" in cur["_asset"] else mode
+            # xpdf's pdftotext can put a blank line inside a row: between
+            # "$500,001 -" and "$1,000,000", or in the middle of a description.
+            # So a blank line ends the asset only once its [XX] code is in and
+            # the amount range is closed, and ends a description only once its
+            # sentence is finished.
+            if mode == "description":
+                done = re.search(r"[.!?)]$", cur.get("description", "").rstrip())
+                mode = "labels" if done else "description_gap"
+            elif mode == "asset" and "[" in cur["_asset"] and not amount_open:
+                mode = "labels"
             continue
         if PAGE_HEADER.match(s):
             continue
@@ -326,8 +334,9 @@ def parse_ptr_text(text, filed=None):
                 amount_open = False
             if parts and parts[0]:
                 cur["_asset"] += " " + " ".join(parts)
-        elif mode == "description":
+        elif mode in ("description", "description_gap"):
             cur["description"] = cur.get("description", "") + " " + s
+            mode = "description"
     if cur:
         rows.append(cur)
     head["rows"] = [_finish(r, head["filed"]) for r in rows]
@@ -474,6 +483,14 @@ def _fetch_and_read(doc_id, year, pdf_dir, filed=None):
 
 
 def main(argv=None):
+    # Output as UTF-8 even where the console code page is not (Windows): one
+    # character outside it would otherwise crash the whole run, and in-page
+    # characters would go out as lone bytes. The guard keeps StringIO (the
+    # test suite's redirect_stdout) working, since it has no reconfigure.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     args = _parser().parse_args(argv)
     if not args.cmd:
         _parser().print_help()

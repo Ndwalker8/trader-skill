@@ -7,10 +7,13 @@ things around the one moment that matters, your yes:
   show      renders each proposed order as a plain-English ticket plus the
             exact JSON Claude will send to Alpaca's place_stock_order tool.
             An order is READY only if trader-risk passed THIS exact order
-            today (matched by fingerprint) and nobody has decided on it yet.
+            (matched by fingerprint) in the last 15 minutes (check.py's
+            checked_at; "risk_pass_max_minutes" in trader/config.json changes
+            it) and nobody has decided on it yet.
   approve   records your explicit yes for ONE order, with your reply word for
             word. It refuses "yes to all", "sure", "ok", a yes that names a
-            different stock or amount, and any order that is not READY.
+            different stock (in the batch or not) or amount, and any order
+            that is not READY.
   decline   records a no.
   result    records what happened after the Allow once / Deny card:
             placed (with the broker's order id), denied, or failed.
@@ -47,6 +50,15 @@ YES_WORDS = ("yes", "y")
 BATCH_WORDS = {"all", "every", "everything", "rest", "remaining", "them", "both", "batch", "each"}
 DOUBT_WORDS = {"no", "not", "dont", "don't", "wait", "cancel", "stop", "but", "maybe", "later",
                "hold", "unless", "if"}
+# Ordinary words that may follow "yes" and are not a ticker, even in capitals.
+PLAIN_WORDS = {"yes", "y", "buy", "sell", "of", "it", "this", "that", "one", "order", "place", "send",
+               "go", "do", "ok", "please", "now", "the", "a", "an", "i", "for", "and", "at", "to", "me",
+               "shares", "share", "stock", "dollars", "usd", "market", "limit", "day", "gtc", "trade"}
+# A word right after one of these names what is being traded.
+TRADE_WORDS = {"buy", "sell", "of"}
+# How long a trader-risk PASS holds before the check must run again. Cash, holdings
+# and prices move after a check. "risk_pass_max_minutes" in the config changes it.
+RISK_PASS_MAX_MINUTES = 15
 
 
 class TicketError(Exception):
@@ -172,6 +184,14 @@ def parse_yes(reply, order, batch_symbols=()):
     tokens = set(re.findall(r"[A-Z][A-Z.\-]{0,6}", raw.upper()))
     others = {s.upper() for s in batch_symbols} - {sym}
     named = tokens & others
+    # Any other ticker the user wrote in capitals ("yes, buy TSLA"), batch or not.
+    sym_l = sym.lower()
+    named |= {t for t in re.findall(r"\b[A-Z]{1,5}(?:[.\-][A-Z])?\b", raw)
+              if t != sym and t.lower() not in PLAIN_WORDS}
+    # A lowercase word right after buy / sell / of that is not this stock ("yes buy tsla").
+    for prev, nxt in zip(words, words[1:]):
+        if prev in TRADE_WORDS and nxt != sym_l and nxt not in PLAIN_WORDS:
+            named.add(nxt.upper())
     if named:
         return False, "the reply names %s, but this order is for %s" % (", ".join(sorted(named)), sym)
     nums = [float(n.replace(",", "")) for n in re.findall(r"\d[\d,]*(?:\.\d+)?", raw)]
@@ -209,7 +229,30 @@ def risk_verdict(risk, fp, today):
     return None, "this exact order was not in the last risk check (it changed or is new); run check.py again"
 
 
-def status_of(order, risk, state, today):
+def pass_expired(risk, now, cfg):
+    """Why a PASS can no longer be relied on, or None. Cash, holdings and prices
+    move after a check, so a PASS holds only for a short time: check.py's
+    checked_at (local time) against now. Anything that cannot be read counts
+    as expired, so a hand-edited or ancient risk.json never makes a ticket READY."""
+    try:
+        checked = datetime.datetime.fromisoformat(str(risk.get("checked_at")))
+    except (TypeError, ValueError):
+        return "the risk check has no time on it; run check.py again"
+    if checked.tzinfo is not None:
+        checked = checked.astimezone().replace(tzinfo=None)
+    try:
+        limit = float(cfg.get("risk_pass_max_minutes", RISK_PASS_MAX_MINUTES))
+    except (TypeError, ValueError):
+        limit = float(RISK_PASS_MAX_MINUTES)
+    age = (now - checked).total_seconds() / 60.0
+    if age < -1:
+        return "the risk check is timed later than now (%s); run check.py again" % risk.get("checked_at")
+    if age > limit:
+        return "the risk check is %d minutes old (the limit is %g); run check.py again" % (age, limit)
+    return None
+
+
+def status_of(order, risk, state, today, now, cfg):
     """(ready, label, risk_result)"""
     fp = fingerprint(order)
     rv, why = risk_verdict(risk, fp, today)
@@ -223,13 +266,16 @@ def status_of(order, risk, state, today):
         if st == "approved":
             return False, "APPROVED by you at %s, waiting for the place_stock_order call" % rec.get("at"), rv
         return False, "DONE: %s at %s" % (st, rec.get("at")), rv
+    expired = pass_expired(risk, now, cfg)
+    if expired:
+        return False, "NOT READY: " + expired, rv
     return True, "READY: trader-risk PASS, waiting for your yes", rv
 
 
 # ---------------------------------------------------------------- rendering
 
-def render(order, idx, total, cfg, risk, state, today):
-    ready, label, rv = status_of(order, risk, state, today)
+def render(order, idx, total, cfg, risk, state, today, now):
+    ready, label, rv = status_of(order, risk, state, today, now, cfg)
     broker = str(cfg.get("broker", "alpaca")).lower()
     paper = cfg.get("paper", True)
     acct = "PAPER account" if paper else "LIVE ACCOUNT, REAL MONEY"
@@ -254,8 +300,8 @@ def render(order, idx, total, cfg, risk, state, today):
     return "\n".join(lines), ready
 
 
-def ticket_json(order, idx, cfg, risk, state, today):
-    ready, label, rv = status_of(order, risk, state, today)
+def ticket_json(order, idx, cfg, risk, state, today, now):
+    ready, label, rv = status_of(order, risk, state, today, now, cfg)
     return {"index": idx, "ready": ready, "status": label, "plain": plain(order),
             "fingerprint": fingerprint(order), "paper": bool(cfg.get("paper", True)),
             "broker": cfg.get("broker", "alpaca"), "tool": "place_stock_order",
@@ -320,7 +366,14 @@ def _load(a):
     risk = read_json(a.risk, "risk check", required=False)
     state = load_state(a.state)
     today = a.today or datetime.date.today().isoformat()
-    return orders, cfg, risk, state, today
+    if getattr(a, "now", None):
+        try:
+            now = datetime.datetime.fromisoformat(a.now)
+        except ValueError:
+            raise TicketError("--now must be an ISO local time like 2026-10-13T10:31 (got %r)" % a.now)
+    else:
+        now = datetime.datetime.now().replace(microsecond=0)
+    return orders, cfg, risk, state, today, now
 
 
 def _pick(orders, index):
@@ -332,15 +385,15 @@ def _pick(orders, index):
 
 
 def cmd_show(a):
-    orders, cfg, risk, state, today = _load(a)
+    orders, cfg, risk, state, today, now = _load(a)
     picks = [(a.index, _pick(orders, a.index))] if a.index else list(enumerate(orders, 1))
     if a.json:
-        out = [ticket_json(o, i, cfg, risk, state, today) for i, o in picks]
+        out = [ticket_json(o, i, cfg, risk, state, today, now) for i, o in picks]
         print(json.dumps(out[0] if a.index else out, indent=2))
         return 0 if any(t["ready"] for t in out) else 1
     blocks, any_ready = [], False
     for i, o in picks:
-        text, ready = render(o, i, len(orders), cfg, risk, state, today)
+        text, ready = render(o, i, len(orders), cfg, risk, state, today, now)
         blocks.append(text)
         any_ready = any_ready or ready
     print("\n\n".join(blocks))
@@ -350,9 +403,9 @@ def cmd_show(a):
 
 
 def cmd_approve(a):
-    orders, cfg, risk, state, today = _load(a)
+    orders, cfg, risk, state, today, now = _load(a)
     order = _pick(orders, a.index)
-    ready, label, rv = status_of(order, risk, state, today)
+    ready, label, rv = status_of(order, risk, state, today, now, cfg)
     if not ready:
         raise TicketError("order %d is not ready: %s" % (a.index, label))
     ok, why = parse_yes(a.reply, order, [o.get("symbol", "") for o in orders])
@@ -377,7 +430,7 @@ def cmd_approve(a):
 
 
 def cmd_decline(a):
-    orders, cfg, risk, state, today = _load(a)
+    orders, cfg, risk, state, today, now = _load(a)
     order = _pick(orders, a.index)
     rec = {"at": now_iso(), "date": today, "index": a.index, "fingerprint": fingerprint(order),
            "symbol": str(order.get("symbol", "")).upper(), "side": order.get("side"),
@@ -389,7 +442,7 @@ def cmd_decline(a):
 
 
 def cmd_result(a):
-    orders, cfg, risk, state, today = _load(a)
+    orders, cfg, risk, state, today, now = _load(a)
     order = _pick(orders, a.index)
     fp = fingerprint(order)
     rec = latest(state, fp, today)
@@ -439,6 +492,14 @@ def cmd_log(a):
 
 
 def main(argv=None):
+    # Output as UTF-8 even where the console code page is not (Windows): one
+    # character outside it would otherwise crash the whole run, and in-page
+    # characters would go out as lone bytes. The guard keeps StringIO (the
+    # test suite's redirect_stdout) working, since it has no reconfigure.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser(description="Order tickets and your yes (trader-broker). Never places orders.")
     sub = ap.add_subparsers(dest="cmd")
 
@@ -448,6 +509,7 @@ def main(argv=None):
         p.add_argument("--risk", default="trader/state/risk.json")
         p.add_argument("--state", default="trader/state/broker.json")
         p.add_argument("--today", help="YYYY-MM-DD (default: today)")
+        p.add_argument("--now", help="pretend it is this local time, ISO (for tests)")
 
     p = sub.add_parser("show", help="render the tickets")
     common(p)
