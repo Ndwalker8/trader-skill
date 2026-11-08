@@ -37,7 +37,9 @@ class Repo(unittest.TestCase):
         self.assertEqual(found, sorted(SKILLS))
 
     def test_root_matches_the_reel(self):
-        root = sorted(d for d in os.listdir(ROOT) if not d.startswith(".git"))
+        # hidden folders (.git, a user's .claude settings) are not part of the pack;
+        # .claude-plugin is, so it is the one dot-folder kept
+        root = sorted(d for d in os.listdir(ROOT) if not d.startswith(".") or d == ".claude-plugin")
         self.assertEqual(root, sorted([".claude-plugin", "LICENSE", "README.md", "tests"] + SKILLS))
 
     def test_frontmatter_name_and_description(self):
